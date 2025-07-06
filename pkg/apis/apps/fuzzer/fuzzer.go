@@ -21,138 +21,107 @@ import (
 
 	"sigs.k8s.io/randfill"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/apps"
 )
 
-// Funcs returns the fuzzer functions for the apps api group.
+// int32Ptr returns a pointer to an int32 value.
+func int32Ptr(i int32) *int32 { return &i }
+
+// Valid deployment strategy types used in fuzzing.
+var deploymentStrategyTypes = []apps.DeploymentStrategyType{
+	apps.RecreateDeploymentStrategyType,
+	apps.RollingUpdateDeploymentStrategyType,
+}
+
+// Valid daemon set update strategy types used in fuzzing.
+var daemonSetUpdateStrategyTypes = []apps.DaemonSetUpdateStrategyType{
+	apps.RollingUpdateDaemonSetStrategyType,
+	apps.OnDeleteDaemonSetStrategyType,
+}
+
+// NOTE:
+// Kubernetes' Scheme.Default only applies to top-level API types.
+// Subresource types (e.g., DeploymentSpec, DaemonSetSpec) must be manually defaulted inside fuzzers.
 var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 	return []interface{}{
 		func(r *apps.ControllerRevision, c randfill.Continue) {
 			c.FillNoCustom(r)
-			// match the fuzzer default content for runtime.Object
-			r.Data = runtime.RawExtension{Raw: []byte(`{"apiVersion":"unknown.group/unknown","kind":"Something","someKey":"someValue"}`)}
+			r.Data = runtime.RawExtension{
+				Raw: []byte(`{"apiVersion":"unknown.group/unknown","kind":"Something","someKey":"someValue"}`),
+			}
+			legacyscheme.Scheme.Default(r)
 		},
 		func(s *apps.StatefulSet, c randfill.Continue) {
-			c.FillNoCustom(s) // fuzz self without calling this function again
+			c.FillNoCustom(s)
+			legacyscheme.Scheme.Default(s)
+		},
+		func(d *apps.Deployment, c randfill.Continue) {
+			c.FillNoCustom(d)
+			legacyscheme.Scheme.Default(d)
+		},
+		func(spec *apps.DeploymentSpec, c randfill.Continue) {
+			c.FillNoCustom(spec)
 
-			// match defaulter
-			if len(s.Spec.PodManagementPolicy) == 0 {
-				s.Spec.PodManagementPolicy = apps.OrderedReadyPodManagement
+			if spec.RevisionHistoryLimit == nil {
+				spec.RevisionHistoryLimit = int32Ptr(c.Rand.Int31())
 			}
-			if len(s.Spec.UpdateStrategy.Type) == 0 {
-				s.Spec.UpdateStrategy.Type = apps.RollingUpdateStatefulSetStrategyType
-			}
-			if s.Spec.PersistentVolumeClaimRetentionPolicy == nil {
-				s.Spec.PersistentVolumeClaimRetentionPolicy = &apps.StatefulSetPersistentVolumeClaimRetentionPolicy{}
-			}
-			if len(s.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted) == 0 {
-				s.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted = apps.RetainPersistentVolumeClaimRetentionPolicyType
-			}
-			if len(s.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled) == 0 {
-				s.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = apps.RetainPersistentVolumeClaimRetentionPolicyType
-			}
-			if s.Spec.RevisionHistoryLimit == nil {
-				s.Spec.RevisionHistoryLimit = new(int32)
-				*s.Spec.RevisionHistoryLimit = 10
-			}
-			if s.Status.ObservedGeneration == nil {
-				s.Status.ObservedGeneration = new(int64)
-			}
-			if s.Status.CollisionCount == nil {
-				s.Status.CollisionCount = new(int32)
-			}
-			if s.Spec.Selector == nil {
-				s.Spec.Selector = &metav1.LabelSelector{MatchLabels: s.Spec.Template.Labels}
-			}
-			if len(s.Labels) == 0 {
-				s.Labels = s.Spec.Template.Labels
+			if spec.ProgressDeadlineSeconds == nil {
+				spec.ProgressDeadlineSeconds = int32Ptr(c.Rand.Int31())
 			}
 		},
-		func(j *apps.Deployment, c randfill.Continue) {
-			c.FillNoCustom(j)
+		func(strategy *apps.DeploymentStrategy, c randfill.Continue) {
+			c.FillNoCustom(strategy)
+			strategy.Type = deploymentStrategyTypes[c.Rand.Intn(len(deploymentStrategyTypes))]
 
-			// match defaulting
-			if j.Spec.Selector == nil {
-				j.Spec.Selector = &metav1.LabelSelector{MatchLabels: j.Spec.Template.Labels}
-			}
-			if len(j.Labels) == 0 {
-				j.Labels = j.Spec.Template.Labels
-			}
-		},
-		func(j *apps.DeploymentSpec, c randfill.Continue) {
-			c.FillNoCustom(j) // fuzz self without calling this function again
-			rhl := int32(c.Rand.Int31())
-			pds := int32(c.Rand.Int31())
-			j.RevisionHistoryLimit = &rhl
-			j.ProgressDeadlineSeconds = &pds
-		},
-		func(j *apps.DeploymentStrategy, c randfill.Continue) {
-			c.FillNoCustom(j) // fuzz self without calling this function again
-			// Ensure that strategyType is one of valid values.
-			strategyTypes := []apps.DeploymentStrategyType{apps.RecreateDeploymentStrategyType, apps.RollingUpdateDeploymentStrategyType}
-			j.Type = strategyTypes[c.Rand.Intn(len(strategyTypes))]
-			if j.Type != apps.RollingUpdateDeploymentStrategyType {
-				j.RollingUpdate = nil
-			} else {
-				rollingUpdate := apps.RollingUpdateDeployment{}
+			if strategy.Type == apps.RollingUpdateDeploymentStrategyType {
+				rolling := apps.RollingUpdateDeployment{}
 				if c.Bool() {
-					rollingUpdate.MaxUnavailable = intstr.FromInt32(c.Rand.Int31())
-					rollingUpdate.MaxSurge = intstr.FromInt32(c.Rand.Int31())
+					rolling.MaxUnavailable = intstr.FromInt32(c.Rand.Int31())
+					rolling.MaxSurge = intstr.FromInt32(c.Rand.Int31())
 				} else {
-					rollingUpdate.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.Rand.Int31()))
+					rolling.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.Rand.Int31()))
 				}
-				j.RollingUpdate = &rollingUpdate
-			}
-		},
-		func(j *apps.DaemonSet, c randfill.Continue) {
-			c.FillNoCustom(j)
-
-			// match defaulter
-			j.Spec.Template.Generation = 0
-			if len(j.ObjectMeta.Labels) == 0 {
-				j.ObjectMeta.Labels = j.Spec.Template.ObjectMeta.Labels
-			}
-		},
-		func(j *apps.DaemonSetSpec, c randfill.Continue) {
-			c.FillNoCustom(j) // fuzz self without calling this function again
-			rhl := int32(c.Rand.Int31())
-			j.RevisionHistoryLimit = &rhl
-		},
-		func(j *apps.DaemonSetUpdateStrategy, c randfill.Continue) {
-			c.FillNoCustom(j) // fuzz self without calling this function again
-			// Ensure that strategyType is one of valid values.
-			strategyTypes := []apps.DaemonSetUpdateStrategyType{apps.RollingUpdateDaemonSetStrategyType, apps.OnDeleteDaemonSetStrategyType}
-			j.Type = strategyTypes[c.Rand.Intn(len(strategyTypes))]
-			if j.Type != apps.RollingUpdateDaemonSetStrategyType {
-				j.RollingUpdate = nil
+				strategy.RollingUpdate = &rolling
 			} else {
-				rollingUpdate := apps.RollingUpdateDaemonSet{}
+				strategy.RollingUpdate = nil
+			}
+		},
+		func(ds *apps.DaemonSet, c randfill.Continue) {
+			c.FillNoCustom(ds)
+			legacyscheme.Scheme.Default(ds)
+		},
+		func(spec *apps.DaemonSetSpec, c randfill.Continue) {
+			c.FillNoCustom(spec)
+			if spec.RevisionHistoryLimit == nil {
+				spec.RevisionHistoryLimit = int32Ptr(c.Rand.Int31())
+			}
+		},
+		func(strategy *apps.DaemonSetUpdateStrategy, c randfill.Continue) {
+			c.FillNoCustom(strategy)
+			strategy.Type = daemonSetUpdateStrategyTypes[c.Rand.Intn(len(daemonSetUpdateStrategyTypes))]
+
+			if strategy.Type == apps.RollingUpdateDaemonSetStrategyType {
+				rolling := apps.RollingUpdateDaemonSet{}
 				if c.Bool() {
 					if c.Bool() {
-						rollingUpdate.MaxUnavailable = intstr.FromInt32(c.Rand.Int31())
-						rollingUpdate.MaxSurge = intstr.FromInt32(c.Rand.Int31())
+						rolling.MaxUnavailable = intstr.FromInt32(c.Rand.Int31())
+						rolling.MaxSurge = intstr.FromInt32(c.Rand.Int31())
 					} else {
-						rollingUpdate.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.Rand.Int31()))
+						rolling.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.Rand.Int31()))
 					}
 				}
-
-				j.RollingUpdate = &rollingUpdate
+				strategy.RollingUpdate = &rolling
+			} else {
+				strategy.RollingUpdate = nil
 			}
 		},
-		func(j *apps.ReplicaSet, c randfill.Continue) {
-			c.FillNoCustom(j)
-
-			// match defaulter
-			if j.Spec.Selector == nil {
-				j.Spec.Selector = &metav1.LabelSelector{MatchLabels: j.Spec.Template.Labels}
-			}
-			if len(j.Labels) == 0 {
-				j.Labels = j.Spec.Template.Labels
-			}
+		func(rs *apps.ReplicaSet, c randfill.Continue) {
+			c.FillNoCustom(rs)
+			legacyscheme.Scheme.Default(rs)
 		},
 	}
 }
