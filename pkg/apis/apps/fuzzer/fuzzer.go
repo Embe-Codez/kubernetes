@@ -21,6 +21,7 @@ import (
 
 	"sigs.k8s.io/randfill"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -29,7 +30,7 @@ import (
 )
 
 // int32Ptr returns a pointer to an int32 value.
-func int32Ptr(i int32) *int32 { return &i }
+func int32Ptr(i int32) *int32 { return &i } 
 
 // Valid deployment strategy types used in fuzzing.
 var deploymentStrategyTypes = []apps.DeploymentStrategyType{
